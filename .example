@@ -1,0 +1,32 @@
+# Google AI Studio Configuration (Required)
+GOOGLE_AI_API_KEY=AIzaSyCaBn9HWwGjgodnwiIWKwNQUNLHuSj4aiU
+MODEL_NAME=gemini-2.0-flash
+TEMPERATURE=0.7
+MAX_TOKENS=1000
+
+# ElevenLabs Configuration (Required for Voice)
+ELEVENLABS_API_KEY=sk_23b7f36c2fd69a8ffe618ff45f3fb44aa13aea4a2f882130
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+
+# Google Cloud Configuration (Required for Voice)
+GOOGLE_APPLICATION_CREDENTIALS=Google_Cloud/my-calendar-project.json
+GOOGLE_CLOUD_PROJECT_ID=106297659866071407608
+
+# Google Calendar API Configuration (Optional)
+GOOGLE_CALENDAR_CREDENTIALS=Google_Cloud\client_secret_934483615560-ekgui5981s8usfqco5srk89u2lbcsgrr.apps.googleusercontent.com.json
+
+
+GOOGLE_CALENDAR_TOKEN=token.json
+
+# Application Settings
+APP_HOST=localhost
+APP_PORT=8000
+DEBUG=True
+
+# Voice Configuration
+DEFAULT_VOICE_LANGUAGE=en-US
+AUDIO_SAMPLE_RATE=16000
+AUDIO_CHUNK_SIZE=1024
+
+# Database
+DATABASE_URL=sqlite:///./smart_scheduler.db

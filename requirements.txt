@@ -1,0 +1,42 @@
+# Core dependencies
+fastapi
+uvicorn
+python-multipart    
+websockets
+
+# LLM and AI
+google-generativeai
+
+# Voice Processing
+speechrecognition
+pydub
+pyaudio
+elevenlabs
+google-cloud-texttospeech
+google-cloud-speech
+
+# Google Calendar Integration
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# Utilities
+python-dotenv
+httpx
+asyncio-mqtt
+dateparser
+pytz
+sqlalchemy
+aiosqlite
+
+# Audio processing
+numpy
+scipy
+librosa
+
+# Development
+pytest
+pytest-asyncio
+black
+flake8 
