@@ -186,7 +186,7 @@ Before setting up the Smart Scheduler, you'll need:
 
 ## 🎯 Usage
 
-### Option 1: Run the Web Interface
+### Run the Web Interface
 
 ```bash
 python src/api/main.py
@@ -268,76 +268,6 @@ The system can handle various time expressions:
 - **Contextual**: "before my meeting", "after lunch"
 - **Constraint-based**: "not too early", "afternoon only"
 - **Complex**: "last weekday of the month", "2 hours before my flight"
-
-## 🧪 Testing
-
-### Unit Tests
-
-```bash
-pytest tests/
-```
-
-### Manual Testing Scenarios
-
-1. **Basic Scheduling Flow**
-   - Request a meeting → Specify duration → Choose time → Confirm
-
-2. **Complex Time Parsing**
-   - "Find me 45 minutes before my Project Alpha meeting"
-   - "Schedule for the last Tuesday of this month"
-
-3. **Conflict Resolution**
-   - Request a fully booked time slot
-   - Test alternative suggestions
-
-4. **Context Switching**
-   - Change meeting duration mid-conversation
-   - Modify time preferences after seeing options
-
-## 📊 Performance & Latency
-
-### Optimizations Implemented
-
-- **Streaming TTS**: ElevenLabs streaming for sub-2-second response times
-- **Concurrent Processing**: Parallel STT and calendar API calls
-- **Intelligent Caching**: Session state and calendar data caching
-- **Voice Activity Detection**: Automatic conversation turn detection
-
-### Expected Performance
-- **Voice Response Latency**: < 2 seconds end-to-end
-- **Calendar Query Time**: < 1 second for 7-day availability
-- **Concurrent Sessions**: Supports 50+ simultaneous users
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-1. **Audio Issues**
-   ```bash
-   # Check audio devices
-   python -c "import pyaudio; pa = pyaudio.PyAudio(); [print(f'{i}: {pa.get_device_info_by_index(i)}') for i in range(pa.get_device_count())]"
-   ```
-
-2. **Google Calendar Authentication**
-   - Ensure `credentials.json` is in the root directory
-   - Check that Calendar API is enabled in Google Cloud Console
-   - Verify OAuth consent screen is configured
-
-3. **API Key Issues**
-   - Verify all API keys are correctly set in `.env`
-   - Check API key permissions and quotas
-
-4. **Import Errors**
-   - Ensure all dependencies are installed: `pip install -r requirements.txt`
-   - Check Python path includes the project directory
-
-### Debug Mode
-
-Enable detailed logging:
-
-```bash
-DEBUG=True python src/api/main.py
-```
 
 ## 🏆 Advanced Features
 
