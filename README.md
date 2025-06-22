@@ -17,7 +17,9 @@ A sophisticated voice-enabled AI agent that helps users find and schedule meetin
 - **Multi-Modal Interface**: Supports both voice and text interactions
 
 ### Technical Highlights
-- **Manual Voice Stack**: Separate STT (Google Cloud Speech) and TTS (ElevenLabs) services
+- **Advanced Voice Stack**: 
+  - Speech-to-Text: ElevenLabs Scribe v1 (primary) with Google Cloud Speech fallback
+  - Text-to-Speech: ElevenLabs with Google Cloud TTS fallback
 - **LLM Integration**: Google Gemini Pro with intelligent function detection for tool orchestration
 - **Advanced Architecture**: Modular design with clear separation of concerns
 - **Session Management**: Persistent conversation state with SQLite storage
@@ -28,7 +30,7 @@ A sophisticated voice-enabled AI agent that helps users find and schedule meetin
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   User Voice    │    │  Speech-to-Text │    │ Conversation    │
-│     Input       │───▶│    (Google)     │───▶│   Manager       │
+│     Input       │───▶│  (ElevenLabs)   │───▶│   Manager       │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                                                         │
 ┌─────────────────┐    ┌─────────────────┐             │
@@ -55,10 +57,10 @@ A sophisticated voice-enabled AI agent that helps users find and schedule meetin
 Before setting up the Smart Scheduler, you'll need:
 
 1. **Python 3.8+**
-2. **Google Cloud Account** (for Speech-to-Text API)
-3. **Google Calendar API Access**
-4. **Google AI Studio API Key** (for Gemini Pro)
-5. **ElevenLabs API Key** (for Text-to-Speech)
+2. **ElevenLabs API Key** (for Speech-to-Text and Text-to-Speech)
+3. **Google Cloud Account** (for fallback Speech-to-Text API)
+4. **Google Calendar API Access**
+5. **Google AI Studio API Key** (for Gemini Pro)
 6. **Audio Input/Output** (microphone and speakers)
 
 ## 🚀 Installation & Setup
@@ -85,7 +87,7 @@ pip install -r requirements.txt
 4. Create credentials (OAuth 2.0 for web application)
 5. Download the credentials JSON file as `credentials.json`
 
-#### Google Cloud Speech-to-Text:
+#### Google Cloud Speech-to-Text (Fallback):
 1. Enable the Google Cloud Speech-to-Text API
 2. Create a service account
 3. Download the service account key as JSON
@@ -99,11 +101,11 @@ Create a `.env` file in the root directory:
 # Google AI Studio Configuration
 GOOGLE_AI_API_KEY=your_google_ai_studio_api_key_here
 
-# ElevenLabs Configuration (for TTS)
+# ElevenLabs Configuration (for TTS and STT)
 ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
 ELEVENLABS_VOICE_ID=your_preferred_voice_id
 
-# Google Cloud Configuration
+# Google Cloud Configuration (for fallback STT)
 GOOGLE_APPLICATION_CREDENTIALS=path/to/your/service-account-key.json
 GOOGLE_CLOUD_PROJECT_ID=your_google_cloud_project_id
 
@@ -232,6 +234,19 @@ AUDIO_CHUNK_SIZE = 1024    # Smaller for lower latency
 # Voice activity detection
 VOICE_THRESHOLD = 0.01     # Sensitivity for speech detection
 SILENCE_DURATION = 2.0     # Seconds of silence before stopping
+```
+
+### Speech-to-Text Options
+
+The system now uses ElevenLabs Scribe v1 as the primary Speech-to-Text service, with Google Cloud Speech as a fallback:
+
+- **ElevenLabs STT**: High accuracy transcription with support for 99 languages
+- **Google Cloud Speech**: Used as fallback and for real-time streaming (until ElevenLabs supports streaming)
+
+To test the Speech-to-Text functionality:
+
+```bash
+python test_stt_elevenlabs.py
 ```
 
 ### Time Parsing

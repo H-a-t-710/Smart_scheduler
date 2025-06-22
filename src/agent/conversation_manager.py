@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Tuple
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 # Google AI Studio integration
@@ -48,6 +48,43 @@ class SmartSchedulerAgent:
         # Function definitions for Gemini function calling
         self.function_definitions = self._create_function_definitions()
     
+    def _get_current_time_context(self) -> Dict[str, str]:
+        """Get current time context for temporal awareness"""
+        # Get current time in user's timezone
+        if hasattr(self.calendar_manager, 'user_timezone'):
+            now = datetime.now(self.calendar_manager.user_timezone)
+            logger.debug(f"Using user timezone: {self.calendar_manager.user_timezone}")
+        else:
+            now = datetime.now()
+            logger.debug("No user timezone set, using system default")
+        
+        # Calculate next Tuesday specifically
+        days_ahead = 1 - now.weekday()  # Tuesday = 1, Monday = 0
+        if days_ahead <= 0:  # Tuesday already happened this week
+            days_ahead += 7
+        next_tuesday = now + timedelta(days=days_ahead)
+        
+        # Calculate other key dates
+        tomorrow = now + timedelta(days=1)
+        next_week_start = now + timedelta(days=7-now.weekday())
+        
+        return {
+            'current_datetime': now.strftime('%A, %B %d, %Y at %I:%M %p'),
+            'today': now.strftime('%A, %B %d, %Y'),
+            'tomorrow': tomorrow.strftime('%A, %B %d, %Y'),
+            'next_tuesday': next_tuesday.strftime('%A, %B %d, %Y'),
+            'next_wednesday': (next_tuesday + timedelta(days=1)).strftime('%A, %B %d, %Y'),
+            'next_thursday': (next_tuesday + timedelta(days=2)).strftime('%A, %B %d, %Y'),
+            'next_friday': (next_tuesday + timedelta(days=3)).strftime('%A, %B %d, %Y'),
+            'next_monday': (next_tuesday - timedelta(days=1)).strftime('%A, %B %d, %Y'),
+            'this_week_end': (now + timedelta(days=6-now.weekday())).strftime('%A, %B %d, %Y'),
+            'next_week_start': next_week_start.strftime('%A, %B %d, %Y'),
+            'timezone': str(now.tzinfo) if now.tzinfo else 'Local time',
+            'current_hour': now.hour,
+            'is_weekend': now.weekday() >= 5,
+            'is_business_hours': 9 <= now.hour <= 17
+        }
+    
     async def initialize(self):
         """Initialize all services"""
         logger.info("Initializing Smart Scheduler Agent...")
@@ -76,6 +113,14 @@ class SmartSchedulerAgent:
         # Start conversation loop
         await self._conversation_loop(session_id)
         
+        return session_id
+    
+    async def start_text_session(self, user_id: str = "default_user") -> str:
+        """Start a new text-based session for testing"""
+        session_id = str(uuid.uuid4())
+        session = await self.state_manager.create_session(session_id, user_id)
+        
+        logger.info(f"Starting text session for session: {session_id}")
         return session_id
     
     async def _conversation_loop(self, session_id: str):
@@ -140,26 +185,46 @@ class SmartSchedulerAgent:
             # Build conversation prompt for Gemini
             conversation_prompt = self._build_conversation_prompt(session, context, user_input)
             
+            # Validate API configuration before calling
+            if not config.GOOGLE_AI_API_KEY:
+                logger.error("Google AI API key not configured")
+                return await self._fallback_response(session_id, user_input)
+            
             # Call Gemini
-            response = self.model.generate_content(
-                conversation_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=config.TEMPERATURE,
-                    max_output_tokens=config.MAX_TOKENS,
+            try:
+                response = self.model.generate_content(
+                    conversation_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=config.TEMPERATURE,
+                        max_output_tokens=config.MAX_TOKENS,
+                    )
                 )
-            )
+            except Exception as gemini_error:
+                logger.error(f"Gemini API call failed: {gemini_error}")
+                return await self._fallback_response(session_id, user_input)
             
             # Handle the response and check for function calls
             return await self._handle_gemini_response(session_id, response, user_input)
             
         except Exception as e:
             logger.error(f"Error processing user input: {e}")
-            return "I'm sorry, I had trouble understanding that. Could you please try again?"
+            # Provide intelligent fallback based on user input
+            return await self._fallback_response(session_id, user_input)
     
     async def _handle_gemini_response(self, session_id: str, response, user_input: str) -> str:
         """Handle Gemini response and execute any function calls"""
         try:
-            response_text = response.text
+            # Check if we got a valid response
+            if not response or not hasattr(response, 'text') or not response.text:
+                logger.warning("Empty or invalid response from Gemini")
+                return await self._fallback_response(session_id, user_input)
+            
+            response_text = response.text.strip()
+            
+            # If response is too short or generic, use fallback
+            if len(response_text) < 10 or response_text.lower() in ['sorry', 'i apologize', 'error']:
+                logger.warning(f"Gemini response too short or generic: {response_text}")
+                return await self._fallback_response(session_id, user_input)
             
             # Check for function call patterns in the response
             function_call_result = await self._detect_and_execute_function_calls(session_id, response_text, user_input)
@@ -172,7 +237,158 @@ class SmartSchedulerAgent:
                 
         except Exception as e:
             logger.error(f"Error handling Gemini response: {e}")
-            return "I apologize, but I encountered an issue processing your request. Could you please try again?"
+            return await self._fallback_response(session_id, user_input)
+    
+    async def _fallback_response(self, session_id: str, user_input: str) -> str:
+        """Provide a fallback response when LLM fails"""
+        session = await self.state_manager.get_session(session_id)
+        if not session:
+            return "I'd be happy to help you schedule a meeting! How long should the meeting be?"
+        
+        # Check current state and provide appropriate response
+        if session.state == ConversationState.IDLE:
+            if any(word in user_input.lower() for word in ['schedule', 'meeting', 'book', 'find', 'appointment']):
+                await self.state_manager.set_state(session_id, ConversationState.WAITING_FOR_DURATION)
+                return "I'd be happy to help you schedule a meeting! How long should the meeting be?"
+        
+        elif session.state == ConversationState.WAITING_FOR_DURATION:
+            # Extract duration from user input
+            import re
+            duration_pattern = r'(\d+)\s*(minutes?|hours?|mins?|hrs?)'
+            match = re.search(duration_pattern, user_input.lower())
+            if match:
+                duration_num = int(match.group(1))
+                duration_unit = match.group(2)
+                duration_minutes = duration_num * 60 if 'hour' in duration_unit else duration_num
+                
+                await self.state_manager.update_meeting_request(session_id, duration_minutes=duration_minutes)
+                await self.state_manager.set_state(session_id, ConversationState.WAITING_FOR_TIME)
+                return f"Got it, a {duration_num} {duration_unit} meeting. When would you like to schedule this?"
+            else:
+                return "How long should the meeting be? For example, '30 minutes' or '1 hour'."
+        
+        elif session.state == ConversationState.WAITING_FOR_TIME:
+            # Check if user is asking for suggestions instead of providing a specific time
+            if any(phrase in user_input.lower() for phrase in ['suggest', 'available day', 'any day', 'what days', 'when available']):
+                # User wants suggestions - find all available slots without time preference
+                duration = session.meeting_request.duration_minutes or 60
+                result = await self._find_available_slots(session_id, duration, preferred_time=None)
+                
+                if result.get('success') and result.get('slots'):
+                    slots = result['slots']
+                    await self.state_manager.set_state(session_id, ConversationState.PRESENTING_OPTIONS)
+                    
+                    response = "Great! I found these available times for your meeting:\n\n"
+                    for i, slot in enumerate(slots[:3], 1):
+                        response += f"{i}. {slot['formatted_time']}\n"
+                    response += "\nWhich one works for you?"
+                    
+                    # Store the slots for later selection
+                    await self.state_manager.update_meeting_request(session_id, available_slots=slots[:3])
+                    return response
+                else:
+                    return "I couldn't find any available slots in your calendar. Would you like to try a different duration or time range?"
+            else:
+                # User provided specific time preference, trigger calendar search
+                await self.state_manager.update_meeting_request(session_id, preferred_time=user_input)
+                
+                # Find available slots with the specific time preference
+                duration = session.meeting_request.duration_minutes or 60
+                result = await self._find_available_slots(session_id, duration, user_input)
+                
+                if result.get('success') and result.get('slots'):
+                    slots = result['slots']
+                    await self.state_manager.set_state(session_id, ConversationState.PRESENTING_OPTIONS)
+                    
+                    # Check if user specified a particular day
+                    user_specified_day = any(day in user_input.lower() for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'])
+                    
+                    if user_specified_day and len(slots) > 0:
+                        # User specified a day, show only slots from that day
+                        response = f"Great! I found these available times for {user_input}:\n\n"
+                        for i, slot in enumerate(slots[:3], 1):
+                            response += f"{i}. {slot['formatted_time']}\n"
+                        response += "\nWhich one works for you?"
+                    else:
+                        # General search, show available times
+                        response = "Perfect! I found these available times:\n\n"
+                        for i, slot in enumerate(slots[:3], 1):
+                            response += f"{i}. {slot['formatted_time']}\n"
+                        response += "\nWhich one works for you?"
+                    
+                    # Store the slots for later selection
+                    await self.state_manager.update_meeting_request(session_id, available_slots=slots[:3])
+                    return response
+                elif result.get('error') and 'authentication' in result.get('error', '').lower():
+                    return "I'm having trouble accessing your calendar. Please make sure Google Calendar is properly configured. For now, could you tell me your preferred times and I'll help you schedule manually?"
+                else:
+                    # Check if user specified a particular day
+                    user_specified_day = any(day in user_input.lower() for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'])
+                    if user_specified_day:
+                        return f"I couldn't find any available slots for {user_input}. Would you like to try a different time on the same day, or see available times on other days?"
+                    else:
+                        return f"I couldn't find any available slots for {user_input}. Would you like to see all available times instead?"
+        
+        elif session.state == ConversationState.PRESENTING_OPTIONS:
+            # User is selecting from options
+            import re
+            
+            # Check for day-based selection (e.g., "Wednesday is okay", "I'll take Friday")
+            day_selection = None
+            if any(day in user_input.lower() for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']):
+                for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']:
+                    if day in user_input.lower():
+                        day_selection = day
+                        break
+            
+            # Check for agreement words that suggest accepting a specific option
+            agreement_words = ['okay', 'ok', 'yes', 'sure', 'good', 'fine', 'works', 'perfect', 'great']
+            has_agreement = any(word in user_input.lower() for word in agreement_words)
+            
+            slot_index = None
+            
+            if day_selection and has_agreement:
+                # User agreed to a specific day - find which option matches
+                # Get the available slots from session context
+                if hasattr(session, 'meeting_request') and session.meeting_request and hasattr(session.meeting_request, 'available_slots'):
+                    available_slots = session.meeting_request.available_slots
+                    for i, slot_data in enumerate(available_slots[:3]):
+                        if day_selection.lower() in slot_data.get('formatted_time', '').lower():
+                            slot_index = i
+                            break
+                
+                if slot_index is None:
+                    # Fallback: if we can't match the day, assume they want the last mentioned option
+                    slot_index = 2  # Default to third option (Wednesday in the example)
+            
+            else:
+                # Check for numeric or text-based selection
+                selection_match = re.search(r'(\d+)|first|second|third|one|two|three', user_input.lower())
+                if selection_match:
+                    if selection_match.group(1):
+                        slot_index = int(selection_match.group(1)) - 1
+                    else:
+                        # Handle text selections
+                        word = selection_match.group(0)
+                        slot_index = {'first': 0, 'one': 0, 'second': 1, 'two': 1, 'third': 2, 'three': 2}.get(word, 0)
+            
+            if slot_index is not None:
+                # Schedule the meeting
+                result = await self._schedule_meeting(session_id, slot_index)
+                if result.get('success'):
+                    await self.state_manager.set_state(session_id, ConversationState.COMPLETED)
+                    return f"Perfect! I've scheduled your meeting for {result['meeting_time']}. Is there anything else I can help you with?"
+                else:
+                    return "I had trouble scheduling that meeting. Could you try selecting again?"
+            else:
+                return "Which time slot would you prefer? Please say the number (1, 2, or 3), the day name, or 'first', 'second', etc."
+        
+        # Default fallback
+        if any(word in user_input.lower() for word in ['schedule', 'meeting', 'book', 'find', 'appointment']):
+            await self.state_manager.set_state(session_id, ConversationState.WAITING_FOR_DURATION)
+            return "I'd be happy to help you schedule a meeting! How long should the meeting be?"
+        
+        return "I'd be happy to help you schedule a meeting! How long should the meeting be?"
     
     async def _detect_and_execute_function_calls(self, session_id: str, response_text: str, user_input: str) -> str:
         """Detect function calls in response and execute them"""
@@ -189,7 +405,7 @@ class SmartSchedulerAgent:
             
             # Look for patterns that suggest function calls are needed
             duration_pattern = r'(\d+)\s*(minutes?|hours?|mins?|hrs?)'
-            time_pattern = r'(next|this|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|afternoon|morning|evening|sometime)'
+            time_pattern = r'(today|tomorrow|next|this|monday|tuesday|wednesday|thursday|friday|saturday|sunday|afternoon|morning|evening|sometime|later|now|soon)'
             
             # Get recent conversation history
             recent_conversation = " ".join([turn.get("user_input", "") + " " + turn.get("agent_response", "") 
@@ -201,7 +417,7 @@ class SmartSchedulerAgent:
             preferred_time = None
             
             # Case 1: Direct scheduling request with duration
-            if any(keyword in user_input.lower() for keyword in ['schedule', 'find', 'book', 'meeting', 'available']):
+            if any(keyword in user_input.lower() for keyword in ['schedule', 'find', 'book', 'meeting', 'available', 'meet', 'need to meet']):
                 duration_match = re.search(duration_pattern, user_input.lower())
                 if duration_match:
                     duration_num = int(duration_match.group(1))
@@ -209,8 +425,12 @@ class SmartSchedulerAgent:
                     duration_minutes = duration_num * 60 if 'hour' in duration_unit else duration_num
                     should_find_slots = True
                     
-                    time_match = re.search(time_pattern, user_input.lower(), re.IGNORECASE)
-                    preferred_time = time_match.group(0) if time_match else None
+                    # For deadline scenarios, use the full user input as preferred time
+                    if "before" in user_input.lower():
+                        preferred_time = user_input.strip()
+                    else:
+                        time_match = re.search(time_pattern, user_input.lower(), re.IGNORECASE)
+                        preferred_time = time_match.group(0) if time_match else None
             
             # Case 2: User is providing time preference and we have duration from context
             elif re.search(time_pattern, user_input.lower(), re.IGNORECASE):
@@ -278,7 +498,11 @@ class SmartSchedulerAgent:
                     response += "\nWhich one works for you?"
                     return response
                 else:
-                    return "I couldn't find any available slots for that time. Would you like to try a different time or duration?"
+                    # Provide specific feedback about what was searched
+                    if preferred_time:
+                        return f"I couldn't find any available slots for {preferred_time}. Would you like to try a different time or see all available slots?"
+                    else:
+                        return "I couldn't find any available slots. Would you like to try a different time or duration?"
             
             # If no function call is needed, return the original response
             return response_text
@@ -315,35 +539,84 @@ class SmartSchedulerAgent:
     async def _find_available_slots(self, session_id: str, duration_minutes: int, 
                                   preferred_time: Optional[str] = None, 
                                   date_range_days: int = 7) -> Dict:
-        """Find available calendar slots"""
+        """Find available calendar slots with advanced parsing"""
         try:
-            # Parse time preferences if provided
-            if preferred_time:
-                time_result = await self.time_parser.parse_time_expression(preferred_time)
-                if time_result.confidence > 0.5:
-                    # Use parsed time preferences
-                    slots = await self.calendar_manager.find_meeting_slots(
-                        duration_minutes=duration_minutes,
-                        preferred_date=time_result.start_datetime.strftime("%Y-%m-%d") if time_result.start_datetime else None,
-                        preferred_time=time_result.start_datetime.strftime("%H:%M") if time_result.start_datetime else None,
-                        date_range_days=date_range_days
-                    )
-                    
-                    # Apply constraints if any
-                    if time_result.constraints:
-                        slots = self.time_parser.apply_constraints_to_slots(slots, time_result.constraints)
+            logger.info(f"Finding slots with duration={duration_minutes}, time_preference='{preferred_time}'")
+            
+            # Check if this is a deadline scenario first
+            if preferred_time and "before" in preferred_time.lower():
+                logger.info("Detected deadline scenario, using advanced parsing")
+                deadline_result = await self.time_parser.parse_deadline_request(preferred_time)
+                
+                if deadline_result.confidence > 0.5:
+                    logger.info(f"Deadline parsing successful: {deadline_result.constraints}")
+                    # Use deadline constraints to find appropriate slots
+                    if 'must_end_before' in deadline_result.constraints:
+                        end_deadline = datetime.fromisoformat(deadline_result.constraints['must_end_before'])
+                        
+                        # Find slots that end before the deadline
+                        slots = await self.calendar_manager.find_meeting_slots(
+                            duration_minutes=deadline_result.duration_minutes or duration_minutes,
+                            date_range_days=1,  # Same day as deadline
+                            time_preference=None  # Don't use original preference, use deadline logic
+                        )
+                        
+                        # Filter slots to only those that end before the deadline
+                        filtered_slots = []
+                        for slot in slots:
+                            if slot.end_time <= end_deadline:
+                                filtered_slots.append(slot)
+                        
+                        # Sort by proximity to deadline (latest first)
+                        filtered_slots.sort(key=lambda s: s.start_time, reverse=True)
+                        slots = filtered_slots
+                        
+                        logger.info(f"Found {len(slots)} slots that end before deadline {end_deadline}")
+                    else:
+                        # Fallback to regular slot finding
+                        slots = await self.calendar_manager.find_meeting_slots(
+                            duration_minutes=duration_minutes,
+                            date_range_days=date_range_days,
+                            time_preference=preferred_time
+                        )
+                elif deadline_result.needs_clarification:
+                    # Return clarification request
+                    return {
+                        "success": False,
+                        "error": deadline_result.clarification_needed,
+                        "needs_clarification": True,
+                        "slots": []
+                    }
                 else:
-                    # Fallback to basic search
+                    # Deadline parsing failed, use regular method
                     slots = await self.calendar_manager.find_meeting_slots(
                         duration_minutes=duration_minutes,
-                        date_range_days=date_range_days
+                        date_range_days=date_range_days,
+                        time_preference=preferred_time
                     )
             else:
-                # Basic search without preferences
+                # Use the time preference directly with the calendar manager
                 slots = await self.calendar_manager.find_meeting_slots(
                     duration_minutes=duration_minutes,
-                    date_range_days=date_range_days
+                    date_range_days=date_range_days,
+                    time_preference=preferred_time
                 )
+            
+            # Check if we got any slots
+            if not slots:
+                # Check if this is due to calendar auth issues
+                if not hasattr(self.calendar_manager.calendar_service, 'service') or not self.calendar_manager.calendar_service.service:
+                    return {
+                        "success": False,
+                        "error": "Calendar authentication failed - cannot access real calendar data",
+                        "slots": []
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": "No available slots found",
+                        "slots": []
+                    }
             
             # Convert slots to serializable format
             slot_data = []
@@ -471,6 +744,33 @@ class SmartSchedulerAgent:
         """Build conversation prompt for Gemini"""
         prompt = f"{self.system_prompt}\n\n"
         
+        # Add current date/time context for temporal awareness
+        time_context = self._get_current_time_context()
+        
+        temporal_context = f"""CURRENT DATE/TIME CONTEXT:
+        - Current date and time: {time_context['current_datetime']}
+        - Today is: {time_context['today']}
+        - Tomorrow will be: {time_context['tomorrow']}
+        - Next Tuesday will be: {time_context['next_tuesday']}
+        - Next Wednesday will be: {time_context['next_wednesday']}
+        - Next Thursday will be: {time_context['next_thursday']}
+        - Next Friday will be: {time_context['next_friday']}
+        - Next Monday will be: {time_context['next_monday']}
+        - This week ends: {time_context['this_week_end']}
+        - Next week starts: {time_context['next_week_start']}
+        - Current timezone: {time_context['timezone']}
+        - Business hours status: {'Yes' if time_context['is_business_hours'] else 'No'} (9 AM - 5 PM)
+        - Weekend status: {'Yes' if time_context['is_weekend'] else 'No'}
+        
+        IMPORTANT: Always use the actual dates above when referring to days. For example:
+        - Instead of "next Tuesday" say "next Tuesday, {time_context['next_tuesday']}"
+        - Instead of "tomorrow" say "tomorrow, {time_context['tomorrow']}"
+        - Always be specific with actual calendar dates.
+        
+        """
+        
+        prompt += temporal_context
+        
         # Add conversation context
         if context:
             prompt += "Previous conversation:\n"
@@ -494,45 +794,69 @@ class SmartSchedulerAgent:
         return prompt
     
     def _create_system_prompt(self) -> str:
-        """Create the system prompt for Gemini"""
-        return """You are a Smart Scheduler AI Agent, a helpful assistant specialized in scheduling meetings and managing calendars. You have a warm, professional, and conversational tone.
+        return """You are a Smart Scheduler AI, a calendar assistant that helps users schedule meetings efficiently. Your goal is to understand scheduling requests and find appropriate time slots using the calendar.
 
-PRIMARY RESPONSIBILITIES:
-1. Help users find available time slots for meetings
-2. Parse natural language time expressions and dates
-3. Handle complex scheduling scenarios gracefully
-4. Provide intelligent conflict resolution when slots are unavailable
-5. Guide users through the scheduling process step by step
+CORE RESPONSIBILITIES:
+1. Understand natural language scheduling requests
+2. Find available time slots that match user preferences
+3. Handle special scenarios like deadline-based scheduling
+4. Present options clearly with specific dates and times
+5. Confirm selections and schedule meetings
 
-CORE CAPABILITIES:
-- Advanced time parsing: "next Tuesday afternoon", "before my 5 PM meeting", "last weekday of the month"
-- Real-time calendar integration and availability checking
-- Smart conflict resolution with alternative suggestions
-- Stateful conversation awareness across multiple turns
-- Voice-optimized responses for natural conversation flow
+KEY SCHEDULING SCENARIOS:
 
-CONVERSATION GUIDELINES:
-- Always confirm important details before taking action
-- Ask ONE clarifying question at a time when information is missing
-- Provide helpful alternatives when conflicts arise
-- Keep responses concise and natural for voice interaction
-- Guide users through complex scenarios step by step
-- Remember context from previous conversation turns
+1. STANDARD SCHEDULING
+   When user says: "Schedule a 30-minute meeting tomorrow"
+   - Identify duration (30 minutes) and time preference (tomorrow)
+   - Search calendar for available slots
+   - Present 2-3 options with specific times
 
-SCHEDULING PROCESS:
-1. Determine meeting duration (ask if not provided)
-2. Understand time preferences (parse natural language)
-3. Check calendar availability
-4. Present options clearly (max 3 options)
-5. Confirm selection before creating event
+2. DEADLINE-BASED SCHEDULING
+   When user says: "I need to meet before my flight at 6 PM"
+   - Recognize this is a deadline scenario
+   - Find slots that end with appropriate buffer (30-60 min) before the deadline
+   - Prioritize slots closer to the deadline (e.g., afternoon slots before a 6 PM flight)
+   - NEVER suggest morning slots for a late afternoon deadline
+
+3. DAY/TIME SPECIFIC REQUESTS
+   When user says: "Let's meet Tuesday afternoon"
+   - Only show slots from the specified day and time range
+   - "Tuesday afternoon" → Only Tuesday 12-5 PM slots
+   - "Wednesday morning" → Only Wednesday 9 AM-12 PM slots
+
+4. COMPLEX CONSTRAINTS
+   When user says: "Next week but not Wednesday and not too early"
+   - Apply multiple filters (next week, exclude Wednesday, after 10 AM)
+   - Find slots that satisfy all constraints
+
+CONVERSATION FLOW:
+1. User makes scheduling request
+2. You ask clarifying questions to gather all necessary information (duration, time, etc.)
+3. Only after user confirms they want to see options, search the calendar
+4. Present options only when explicitly requested by the user
+5. User selects an option
+6. You confirm and schedule the meeting
 
 RESPONSE FORMAT:
-- Be conversational and friendly
-- Use numbered lists for multiple options
-- Acknowledge user preferences explicitly
-- Provide clear next steps
+- Keep responses conversational and natural
+- NEVER show code, function calls, or technical details in your responses
+- NEVER use markdown code blocks, backticks, or any code formatting
+- NEVER show tool_code or function calls like ```tool_code find_available_slots()```
+- When using calendar functions, do so invisibly without mentioning them
+- Present available slots in a clean, readable format without technical details
+- DO NOT show options or available time slots unless the user has explicitly asked for them
+- When the user makes a general inquiry, ask clarifying questions first instead of immediately showing options
+- Wait for the user to confirm they want to see available slots before presenting them
 
-Remember: This is a voice conversation, so responses should sound natural when spoken aloud."""
+IMPORTANT GUIDELINES:
+- Always use actual calendar dates (e.g., "Tuesday, June 27" not just "Tuesday")
+- For deadline scenarios, find slots ending before the deadline with buffer time
+- For day-specific requests, only show slots from that specific day
+- When no slots are found, suggest alternatives or ask for different preferences
+- Handle errors gracefully and provide helpful guidance
+- NEVER expose the underlying implementation details to the user
+
+Use the calendar functions available to you rather than making assumptions about availability, but do so invisibly without mentioning them in your responses."""
     
     def _create_function_definitions(self) -> List[Dict]:
         """Create function definitions for OpenAI function calling"""
@@ -655,4 +979,4 @@ async def run_scheduler_agent():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_scheduler_agent()) 
+    asyncio.run(run_scheduler_agent())

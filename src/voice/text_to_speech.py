@@ -18,6 +18,8 @@ except ImportError:
         NEW_ELEVENLABS_API = None
 import pyaudio
 import wave
+import os
+from pydub import AudioSegment
 from config.environment import config
 
 logger = logging.getLogger(__name__)
@@ -104,15 +106,45 @@ class TextToSpeechService:
 
     async def play_audio_bytes(self, audio_bytes: bytes):
         try:
-            temp_file = "temp_audio.wav"
-            with open(temp_file, 'wb') as f:
+            # Save MP3 bytes to a temporary file
+            temp_mp3_file = "temp_audio.mp3"
+            temp_wav_file = "temp_audio.wav"
+            
+            with open(temp_mp3_file, 'wb') as f:
                 f.write(audio_bytes)
-            await self.play_audio_file(temp_file)
-            import os
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            
+            # Convert MP3 to WAV using pydub
+            try:
+                audio = AudioSegment.from_mp3(temp_mp3_file)
+                audio.export(temp_wav_file, format="wav")
+                
+                # Play the WAV file
+                await self.play_audio_file(temp_wav_file)
+            except Exception as e:
+                logger.error(f"Error converting MP3 to WAV: {e}")
+                # Try direct playback as a fallback
+                logger.info("Trying direct playback of audio bytes...")
+                self._play_raw_audio_bytes(audio_bytes)
+            
+            # Clean up temporary files
+            if os.path.exists(temp_mp3_file):
+                os.remove(temp_mp3_file)
+            if os.path.exists(temp_wav_file):
+                os.remove(temp_wav_file)
+                
         except Exception as e:
             logger.error(f"Error playing audio bytes: {e}")
+    
+    def _play_raw_audio_bytes(self, audio_bytes: bytes):
+        """Direct playback of audio bytes using elevenlabs.play if available"""
+        try:
+            if NEW_ELEVENLABS_API:
+                from elevenlabs import play
+                play(audio_bytes)
+            else:
+                logger.warning("Direct audio playback not available")
+        except Exception as e:
+            logger.error(f"Error in direct audio playback: {e}")
 
     async def play_audio_file(self, audio_file_path: str):
         try:

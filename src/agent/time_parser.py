@@ -33,7 +33,13 @@ class AdvancedTimeParser:
     
     def __init__(self, calendar_manager: CalendarManager):
         self.calendar_manager = calendar_manager
-        self.timezone = pytz.timezone('UTC')  # Default, should be configurable
+        # Use local timezone for better day/date alignment
+        import tzlocal
+        try:
+            self.timezone = tzlocal.get_localzone()
+        except:
+            # Fallback to a common timezone if local detection fails
+            self.timezone = pytz.timezone('America/New_York')
         
         # Time pattern regex
         self.patterns = {
@@ -119,11 +125,20 @@ class AdvancedTimeParser:
                         elif unit.lower() in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']:
                             weekday = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].index(unit.lower())
                             days_ahead = weekday - now.weekday()
-                            if days_ahead <= 0:  # Target day already happened this week
-                                days_ahead += 7
                             
-                            if 'next' in text:
-                                days_ahead += 7
+                            # Handle "this" vs "next" context
+                            if 'this' in text:
+                                if days_ahead <= 0:  # Day already happened this week
+                                    days_ahead += 7
+                            elif 'next' in text:
+                                if days_ahead <= 0:  # Always go to next week
+                                    days_ahead += 7
+                                else:  # Even if day hasn't happened this week, go to next week
+                                    days_ahead += 7
+                            else:
+                                # Default behavior - if day already passed, go to next week
+                                if days_ahead <= 0:
+                                    days_ahead += 7
                             
                             start_time = now + timedelta(days=days_ahead)
                             end_time = start_time + timedelta(hours=8)  # 8-hour window
@@ -184,38 +199,54 @@ class AdvancedTimeParser:
                         reference_event = await self.calendar_manager.find_existing_event(event_description)
                         
                         if reference_event:
-                            context = groups.get('context', 'before')
-                            duration = groups.get('duration', '1')
-                            unit = groups.get('unit', 'hours')
-                            
-                            try:
-                                duration_num = int(duration)
-                            except ValueError:
-                                duration_num = 1
-                            
-                            if unit.startswith('minute'):
-                                delta = timedelta(minutes=duration_num)
-                            else:
-                                delta = timedelta(hours=duration_num)
+                            context = groups.get('context', '').lower()
+                            duration = groups.get('duration')
+                            unit = groups.get('unit', 'minutes')
                             
                             if context == 'before':
-                                target_time = reference_event.start_time - delta
-                            else:
-                                target_time = reference_event.end_time + delta
+                                if duration:
+                                    # "45 minutes before my flight"
+                                    minutes = int(duration) if unit.startswith('minute') else int(duration) * 60
+                                    end_time = reference_event.start_time - timedelta(minutes=15)  # Buffer
+                                    start_time = end_time - timedelta(minutes=minutes)
+                                else:
+                                    # "before my flight" - default window
+                                    end_time = reference_event.start_time - timedelta(minutes=30)
+                                    start_time = end_time - timedelta(hours=4)  # 4-hour window
+                            
+                            elif context == 'after':
+                                if duration:
+                                    # "a day or two after the event"
+                                    if 'day' in text:
+                                        days = 1
+                                        if 'two' in text or '2' in text:
+                                            days = 2
+                                        start_time = reference_event.end_time + timedelta(days=days)
+                                        end_time = start_time + timedelta(hours=8)
+                                    else:
+                                        minutes = int(duration) if unit.startswith('minute') else int(duration) * 60
+                                        start_time = reference_event.end_time + timedelta(minutes=15)  # Buffer
+                                        end_time = start_time + timedelta(minutes=minutes)
+                                else:
+                                    # "after my event" - default window
+                                    start_time = reference_event.end_time + timedelta(minutes=30)
+                                    end_time = start_time + timedelta(hours=4)
                             
                             return TimeParseResult(
-                                start_datetime=target_time,
-                                end_datetime=target_time + timedelta(hours=2),
+                                start_datetime=start_time,
+                                end_datetime=end_time,
                                 constraints={'reference_event': reference_event.summary},
                                 confidence=0.9
                             )
                         else:
-                            # Event not found, need clarification
+                            # Event not found, needs clarification
                             return TimeParseResult(
                                 needs_clarification=True,
-                                clarification_needed=f"I couldn't find the event '{event_description}' in your calendar. Could you provide more details or a different time reference?",
+                                clarification_needed=f"I couldn't find an event matching '{event_description}' in your calendar. Could you provide more details or check the event name?",
                                 confidence=0.3
                             )
+                        
+
                     
                 except Exception as e:
                     logger.error(f"Error parsing contextual time: {e}")
@@ -284,7 +315,30 @@ class AdvancedTimeParser:
     
     async def _parse_specific_time(self, text: str) -> TimeParseResult:
         """Parse specific time expressions"""
-        # Use dateparser for specific dates and times
+        text_lower = text.lower()
+        now = datetime.now(self.timezone) if self.timezone else datetime.now()
+        
+        # Handle specific relative terms
+        if 'today' in text_lower:
+            start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            end_time = now.replace(hour=17, minute=0, second=0, microsecond=0)
+            return TimeParseResult(
+                start_datetime=start_time,
+                end_datetime=end_time,
+                confidence=0.9
+            )
+        
+        if 'tomorrow' in text_lower:
+            tomorrow = now + timedelta(days=1)
+            start_time = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
+            end_time = tomorrow.replace(hour=17, minute=0, second=0, microsecond=0)
+            return TimeParseResult(
+                start_datetime=start_time,
+                end_datetime=end_time,
+                confidence=0.9
+            )
+        
+        # Use dateparser for other specific dates and times
         parsed_date = dateparser.parse(text, settings={'TIMEZONE': str(self.timezone)})
         
         if parsed_date:
@@ -412,34 +466,217 @@ class AdvancedTimeParser:
         return filtered_slots
     
     async def parse_complex_request(self, text: str) -> Dict:
-        """Parse complex scheduling requests with multiple components"""
+        """Parse complex scheduling requests with multiple constraints"""
+        text_lower = text.lower()
         result = {
-            'duration': None,
-            'time_preferences': None,
             'constraints': {},
+            'preferences': {},
             'needs_clarification': False,
-            'clarification_needed': []
+            'clarification_needed': '',
+            'confidence': 0.0
         }
         
-        # Parse duration
-        duration = await self.parse_duration(text)
-        if duration:
-            result['duration'] = duration
-        else:
+        # Handle "last weekday of month" scenarios
+        if 'last weekday' in text_lower and 'month' in text_lower:
+            now = datetime.now(self.timezone)
+            # Find last weekday of current month
+            last_day = (now.replace(day=1) + relativedelta(months=1)) - timedelta(days=1)
+            while last_day.weekday() > 4:  # Skip weekends
+                last_day -= timedelta(days=1)
+            
+            result['start_datetime'] = last_day.replace(hour=9, minute=0, second=0, microsecond=0)
+            result['end_datetime'] = last_day.replace(hour=17, minute=0, second=0, microsecond=0)
+            result['confidence'] = 0.9
+            return result
+        
+        # Handle "usual sync-up" scenarios - requires memory/context
+        if 'usual' in text_lower and ('sync' in text_lower or 'meeting' in text_lower):
+            # Default to common meeting duration and suggest clarification
+            result['duration_minutes'] = 30  # Default assumption
             result['needs_clarification'] = True
-            result['clarification_needed'].append("How long should the meeting be?")
+            result['clarification_needed'] = "I understand you want to schedule your usual meeting. How long is it typically, and do you have a preferred time?"
+            result['confidence'] = 0.6
+            return result
         
-        # Parse time preferences
-        time_result = await self.parse_time_expression(text)
-        if time_result.confidence > 0.5:
-            result['time_preferences'] = time_result
-            result['constraints'].update(time_result.constraints)
-        else:
-            if time_result.needs_clarification:
-                result['needs_clarification'] = True
-                result['clarification_needed'].append(time_result.clarification_needed)
-            else:
-                result['needs_clarification'] = True
-                result['clarification_needed'].append("When would you like to schedule the meeting?")
+        # Handle complex evening scenarios with buffer requirements
+        if 'evening' in text_lower and ('after' in text_lower or 'decompress' in text_lower):
+            # Need to find last meeting of the day and add buffer
+            now = datetime.now(self.timezone)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            # This would require querying calendar for last meeting
+            result['constraints']['after_last_meeting'] = True
+            result['constraints']['buffer_minutes'] = 60  # 1 hour to decompress
+            result['constraints']['time_range'] = (19, 22)  # After 7 PM
+            result['preferences']['minimum_start_time'] = '19:00'
+            result['confidence'] = 0.7
+            return result
         
-        return result 
+        # Handle multiple negative constraints
+        if 'not' in text_lower:
+            excluded_days = []
+            excluded_times = []
+            
+            # Parse excluded days
+            for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']:
+                if f'not on {day}' in text_lower or f'not {day}' in text_lower:
+                    excluded_days.append(day)
+            
+            # Parse excluded time constraints
+            if 'not too early' in text_lower:
+                excluded_times.append('early_morning')
+                result['constraints']['not_before'] = 9
+            
+            if excluded_days:
+                result['constraints']['excluded_days'] = excluded_days
+            if excluded_times:
+                result['constraints']['excluded_times'] = excluded_times
+            
+            result['confidence'] = 0.6 if excluded_days or excluded_times else 0.0
+        
+        # Handle vague time preferences
+        if 'sometime' in text_lower and 'next week' in text_lower:
+            now = datetime.now(self.timezone)
+            next_week_start = now + timedelta(days=7-now.weekday())
+            next_week_end = next_week_start + timedelta(days=7)
+            
+            result['start_datetime'] = next_week_start.replace(hour=9, minute=0, second=0, microsecond=0)
+            result['end_datetime'] = next_week_end.replace(hour=17, minute=0, second=0, microsecond=0)
+            result['preferences']['flexible'] = True
+            result['confidence'] = 0.5
+        
+        return result
+    
+    async def parse_deadline_request(self, text: str) -> TimeParseResult:
+        """Parse requests with deadlines like 'before my flight that leaves Friday at 6 PM'"""
+        text_lower = text.lower()
+        
+        # Extract deadline information
+        deadline_patterns = [
+            # "I need to meet for 45 minutes sometime before my flight that leaves on Friday at 6 PM"
+            r'for\s+(?P<duration>\d+)\s+(?P<unit>minutes?|hours?)\s+.*?before\s+(?P<event>.*?)\s+(?:that\s+)?(?:leaves|starts|begins)\s+(?:on\s+)?(?P<day>\w+)\s+at\s+(?P<time>\d+(?::\d+)?\s*(?:am|pm))',
+            # "before my flight that leaves Friday at 6 PM"
+            r'before\s+(?P<event>.*?)\s+(?:that\s+)?(?:leaves|starts|begins)\s+(?:on\s+)?(?P<day>\w+)\s+at\s+(?P<time>\d+(?::\d+)?\s*(?:am|pm))',
+            # "before my meeting on Friday at 6 PM"
+            r'before\s+(?P<event>.*?)\s+(?:on\s+)?(?P<day>\w+)\s+at\s+(?P<time>\d+(?::\d+)?\s*(?:am|pm))',
+            # "45 minutes before my flight"
+            r'(?P<duration>\d+)\s+(?P<unit>minutes?|hours?)\s+before\s+(?P<event>.*)'
+        ]
+        
+        for pattern in deadline_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                groups = match.groupdict()
+                
+                if 'day' in groups and 'time' in groups:
+                    # Parse the deadline
+                    day_name = groups['day']
+                    time_str = groups['time']
+                    event_name = groups['event']
+                    
+                    # Get duration from regex groups if available, otherwise extract from text
+                    if 'duration' in groups and 'unit' in groups:
+                        duration_num = int(groups['duration'])
+                        duration_unit = groups['unit']
+                        if duration_unit.startswith('hour'):
+                            meeting_duration = duration_num * 60
+                        else:
+                            meeting_duration = duration_num
+                    else:
+                        # Extract meeting duration from original text
+                        duration_match = re.search(r'(\d+)\s+(minutes?|hours?)', text)
+                        if duration_match:
+                            duration_num = int(duration_match.group(1))
+                            duration_unit = duration_match.group(2)
+                            
+                            if duration_unit.startswith('hour'):
+                                meeting_duration = duration_num * 60
+                            else:
+                                meeting_duration = duration_num
+                        else:
+                            meeting_duration = 60  # Default 1 hour
+                    
+                    # Find the specific day
+                    now = datetime.now(self.timezone)
+                    days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+                    
+                    if day_name in days:
+                        target_weekday = days.index(day_name)
+                        days_ahead = target_weekday - now.weekday()
+                        if days_ahead <= 0:  # If day already passed this week
+                            days_ahead += 7
+                        
+                        deadline_date = now + timedelta(days=days_ahead)
+                        
+                        # Parse time
+                        time_match = re.match(r'(\d+)(?::(\d+))?\s*(am|pm)?', time_str)
+                        if time_match:
+                            hour = int(time_match.group(1))
+                            minute = int(time_match.group(2)) if time_match.group(2) else 0
+                            ampm = time_match.group(3)
+                            
+                            if ampm == 'pm' and hour != 12:
+                                hour += 12
+                            elif ampm == 'am' and hour == 12:
+                                hour = 0
+                            
+                            deadline_datetime = deadline_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                            
+                            # End time should be at least 30 minutes before deadline
+                            end_time = deadline_datetime - timedelta(minutes=30)
+                            start_time = end_time - timedelta(minutes=meeting_duration)
+                            
+                            # Expand search window backwards
+                            search_start = deadline_datetime - timedelta(hours=8)  # 8 hours before deadline
+                            
+                            logger.info(f"Deadline parsing: Flight at {deadline_datetime}, meeting must end by {end_time}, duration {meeting_duration} min")
+                            
+                            return TimeParseResult(
+                                start_datetime=search_start,
+                                end_datetime=end_time,
+                                duration_minutes=meeting_duration,
+                                constraints={
+                                    'deadline': deadline_datetime.isoformat(),
+                                    'deadline_event': event_name,
+                                    'must_end_before': end_time.isoformat()
+                                },
+                                confidence=0.9
+                            )
+                
+                elif 'duration' in groups and 'event' in groups:
+                    # Handle "45 minutes before my flight"
+                    duration = int(groups['duration'])
+                    unit = groups['unit']
+                    event_name = groups['event']
+                    
+                    # Try to find the event in calendar
+                    reference_event = await self.calendar_manager.find_existing_event(event_name)
+                    
+                    if reference_event:
+                        if unit.startswith('hour'):
+                            duration_minutes = duration * 60
+                        else:
+                            duration_minutes = duration
+                        
+                        end_time = reference_event.start_time - timedelta(minutes=15)  # Buffer
+                        start_time = end_time - timedelta(minutes=duration_minutes)
+                        
+                        return TimeParseResult(
+                            start_datetime=start_time,
+                            end_datetime=end_time,
+                            duration_minutes=duration_minutes,
+                            constraints={
+                                'reference_event': reference_event.summary,
+                                'must_end_before': end_time.isoformat()
+                            },
+                            confidence=0.9
+                        )
+                    else:
+                        return TimeParseResult(
+                            needs_clarification=True,
+                            clarification_needed=f"I couldn't find '{event_name}' in your calendar. Could you provide the specific date and time for this event?",
+                            confidence=0.3
+                        )
+        
+        return TimeParseResult(confidence=0.0) 

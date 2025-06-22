@@ -12,8 +12,7 @@ speechrecognition
 pydub
 pyaudio
 elevenlabs
-google-cloud-texttospeech
-google-cloud-speech
+openai-whisper
 
 # Google Calendar Integration
 google-auth
@@ -27,6 +26,7 @@ httpx
 asyncio-mqtt
 dateparser
 pytz
+tzlocal
 sqlalchemy
 aiosqlite
 

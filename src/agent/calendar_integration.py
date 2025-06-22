@@ -48,21 +48,34 @@ class CalendarEvent:
 class TimeSlot:
     """Represents an available time slot"""
     
-    def __init__(self, start_time: datetime, end_time: datetime):
+    def __init__(self, start_time: datetime, end_time: datetime, user_timezone=None):
         self.start_time = start_time
         self.end_time = end_time
         self.duration_minutes = int((end_time - start_time).total_seconds() / 60)
+        self.user_timezone = user_timezone
     
     def can_fit_meeting(self, duration_minutes: int) -> bool:
         """Check if this slot can fit a meeting of given duration"""
         return self.duration_minutes >= duration_minutes
     
     def __str__(self):
-        # Format for user-friendly display
-        day_name = self.start_time.strftime('%A')  # Monday, Tuesday, etc.
-        date = self.start_time.strftime('%B %d')   # December 16
-        start_time = self.start_time.strftime('%I:%M %p').lstrip('0')  # 2:00 PM (remove leading zero)
-        end_time = self.end_time.strftime('%I:%M %p').lstrip('0')      # 3:00 PM
+        # Format for user-friendly display in user's local timezone
+        display_start = self.start_time
+        display_end = self.end_time
+        
+        # Convert to user's timezone if available and times are timezone-aware
+        if self.user_timezone and self.start_time.tzinfo:
+            display_start = self.start_time.astimezone(self.user_timezone)
+            display_end = self.end_time.astimezone(self.user_timezone)
+        elif self.user_timezone and not self.start_time.tzinfo:
+            # If no timezone info, assume it's already in user's timezone
+            display_start = self.start_time.replace(tzinfo=self.user_timezone)
+            display_end = self.end_time.replace(tzinfo=self.user_timezone)
+        
+        day_name = display_start.strftime('%A')  # Monday, Tuesday, etc.
+        date = display_start.strftime('%B %d')   # December 16
+        start_time = display_start.strftime('%I:%M %p').lstrip('0')  # 2:00 PM (remove leading zero)
+        end_time = display_end.strftime('%I:%M %p').lstrip('0')      # 3:00 PM
         
         return f"{day_name}, {date} at {start_time} - {end_time}"
 
@@ -71,7 +84,13 @@ class GoogleCalendarService:
     
     def __init__(self):
         self.service = None
-        self.timezone = pytz.timezone('UTC')  # Default timezone
+        # Use local timezone for better day/date alignment
+        import tzlocal
+        try:
+            self.timezone = tzlocal.get_localzone()
+        except:
+            # Fallback to a common timezone if local detection fails
+            self.timezone = pytz.timezone('America/New_York')
         self.calendar_id = 'primary'  # Use primary calendar
     
     async def authenticate(self) -> bool:
@@ -111,9 +130,10 @@ class GoogleCalendarService:
                 # Try to authenticate first
                 auth_success = await self.authenticate()
                 if not auth_success:
-                    # Fall back to mock mode if authentication fails
-                    logger.info("Using mock calendar data - Google Calendar not available")
-                    return self._get_mock_busy_times(start_datetime, end_datetime)
+                    # Log error and return empty list - don't use mock data for real scheduling
+                    logger.error("Google Calendar authentication failed - cannot retrieve real calendar data")
+                    logger.error("Please ensure Google Calendar API is properly configured")
+                    return []  # Return empty list instead of mock data
             
             # Format times for API
             time_min = start_datetime.isoformat()
@@ -145,52 +165,14 @@ class GoogleCalendarService:
             return busy_times
             
         except HttpError as error:
-            logger.error(f"An error occurred: {error}")
-            # Fall back to mock mode on API errors
-            return self._get_mock_busy_times(start_datetime, end_datetime)
+            logger.error(f"Google Calendar API error: {error}")
+            logger.error("Please check your Google Calendar API configuration and permissions")
+            return []  # Return empty list instead of mock data
         except Exception as e:
             logger.error(f"Unexpected error in get_busy_times: {e}")
-            # Fall back to mock mode on any other errors
-            return self._get_mock_busy_times(start_datetime, end_datetime)
+            return []  # Return empty list instead of mock data
     
-    def _get_mock_busy_times(self, start_datetime: datetime, end_datetime: datetime) -> List[Tuple[datetime, datetime]]:
-        """Generate mock busy times for demo purposes"""
-        busy_times = []
-        current_date = start_datetime.date()
-        end_date = end_datetime.date()
-        
-        while current_date <= end_date:
-            # Skip weekends
-            if current_date.weekday() < 5:  # Monday = 0, Friday = 4
-                # Add some sample meetings
-                if current_date.weekday() == 4:  # Friday
-                    # Add a 6 PM flight (mentioned in the conversation)
-                    flight_start = datetime.combine(current_date, datetime.min.time().replace(hour=18, minute=0))
-                    flight_end = datetime.combine(current_date, datetime.min.time().replace(hour=20, minute=0))
-                    # Make timezone aware if start_datetime is timezone aware
-                    if start_datetime.tzinfo:
-                        flight_start = self.timezone.localize(flight_start)
-                        flight_end = self.timezone.localize(flight_end)
-                    busy_times.append((flight_start, flight_end))
-                
-                # Add some regular meetings
-                meeting1_start = datetime.combine(current_date, datetime.min.time().replace(hour=10, minute=0))
-                meeting1_end = datetime.combine(current_date, datetime.min.time().replace(hour=11, minute=0))
-                if start_datetime.tzinfo:
-                    meeting1_start = self.timezone.localize(meeting1_start)
-                    meeting1_end = self.timezone.localize(meeting1_end)
-                busy_times.append((meeting1_start, meeting1_end))
-                
-                meeting2_start = datetime.combine(current_date, datetime.min.time().replace(hour=14, minute=0))
-                meeting2_end = datetime.combine(current_date, datetime.min.time().replace(hour=15, minute=30))
-                if start_datetime.tzinfo:
-                    meeting2_start = self.timezone.localize(meeting2_start)
-                    meeting2_end = self.timezone.localize(meeting2_end)
-                busy_times.append((meeting2_start, meeting2_end))
-            
-            current_date += timedelta(days=1)
-        
-        return busy_times
+
     
     async def find_available_slots(self, 
                                  duration_minutes: int, 
@@ -263,7 +245,7 @@ class GoogleCalendarService:
                 if gap_duration >= duration_minutes + buffer_minutes:
                     # Create a slot exactly for the meeting duration
                     slot_end = current_time + timedelta(minutes=duration_minutes)
-                    slot = TimeSlot(current_time, slot_end)
+                    slot = TimeSlot(current_time, slot_end, user_timezone=self.timezone)
                     available_slots.append(slot)
             
             # Move past this busy time
@@ -275,7 +257,7 @@ class GoogleCalendarService:
             if gap_duration >= duration_minutes:
                 # Create a slot exactly for the meeting duration
                 slot_end = current_time + timedelta(minutes=duration_minutes)
-                slot = TimeSlot(current_time, slot_end)
+                slot = TimeSlot(current_time, slot_end, user_timezone=self.timezone)
                 available_slots.append(slot)
         
         return available_slots
@@ -284,11 +266,11 @@ class GoogleCalendarService:
         """Create a new calendar event"""
         try:
             if not self.service:
-                # Mock mode - simulate event creation
-                import uuid
-                event_id = f"mock_event_{uuid.uuid4().hex[:8]}"
-                logger.info(f"Mock event created: {event.summary} at {event.start_time} (ID: {event_id})")
-                return event_id
+                # Try to authenticate first
+                auth_success = await self.authenticate()
+                if not auth_success:
+                    logger.error("Cannot create calendar event - Google Calendar authentication failed")
+                    return None
             
             event_dict = event.to_dict()
             created_event = self.service.events().insert(
@@ -349,8 +331,17 @@ class CalendarManager:
     """High-level manager for calendar operations"""
     
     def __init__(self):
+        # Use local timezone for better day/date alignment
+        import tzlocal
+        try:
+            self.user_timezone = tzlocal.get_localzone()
+        except:
+            # Fallback to a common timezone if local detection fails
+            self.user_timezone = pytz.timezone('America/New_York')
+        
         self.calendar_service = GoogleCalendarService()
-        self.user_timezone = pytz.timezone('UTC')  # Will be set based on user preference
+        # Ensure calendar service uses the same timezone
+        self.calendar_service.timezone = self.user_timezone
     
     async def initialize(self):
         """Initialize the calendar manager"""
@@ -363,11 +354,53 @@ class CalendarManager:
                                duration_minutes: int,
                                preferred_date: Optional[str] = None,
                                preferred_time: Optional[str] = None,
-                               date_range_days: int = 7) -> List[TimeSlot]:
+                               date_range_days: int = 7,
+                               time_preference: Optional[str] = None) -> List[TimeSlot]:
         """Find available meeting slots based on user preferences"""
         try:
+            # Parse time preference if provided (e.g., "Tuesday morning", "Wednesday afternoon")
+            if time_preference:
+                # Use dateparser to handle natural language with timezone settings
+                parsed_time = dateparser.parse(
+                    time_preference, 
+                    settings={
+                        'PREFER_DATES_FROM': 'future',
+                        'TIMEZONE': str(self.user_timezone),
+                        'RETURN_AS_TIMEZONE_AWARE': True
+                    }
+                )
+                
+                if parsed_time:
+                    # Ensure parsed time is in user's timezone
+                    if parsed_time.tzinfo is None:
+                        parsed_time = parsed_time.replace(tzinfo=self.user_timezone)
+                    else:
+                        parsed_time = parsed_time.astimezone(self.user_timezone)
+                    
+                    # If it's a specific day, search only that day in user's timezone
+                    start_datetime = parsed_time.replace(hour=9, minute=0, second=0, microsecond=0)
+                    end_datetime = parsed_time.replace(hour=17, minute=0, second=0, microsecond=0)
+                    
+                    # Adjust for morning/afternoon preferences in user's local timezone
+                    if 'morning' in time_preference.lower():
+                        start_datetime = parsed_time.replace(hour=9, minute=0, second=0, microsecond=0)
+                        end_datetime = parsed_time.replace(hour=12, minute=0, second=0, microsecond=0)
+                    elif 'afternoon' in time_preference.lower():
+                        start_datetime = parsed_time.replace(hour=12, minute=0, second=0, microsecond=0)
+                        end_datetime = parsed_time.replace(hour=17, minute=0, second=0, microsecond=0)
+                    elif 'evening' in time_preference.lower():
+                        start_datetime = parsed_time.replace(hour=17, minute=0, second=0, microsecond=0)
+                        end_datetime = parsed_time.replace(hour=20, minute=0, second=0, microsecond=0)
+                    
+                    logger.info(f"Parsed '{time_preference}' to {start_datetime} - {end_datetime} in timezone {self.user_timezone}")
+                else:
+                    # Fallback to default range if parsing fails
+                    now = datetime.now(self.user_timezone)
+                    start_datetime = now + timedelta(hours=1)
+                    end_datetime = start_datetime + timedelta(days=date_range_days)
+            
             # Parse preferred date/time or use defaults
-            if preferred_date and preferred_time:
+            elif preferred_date and preferred_time:
                 start_datetime = dateparser.parse(f"{preferred_date} {preferred_time}")
                 end_datetime = start_datetime + timedelta(days=1)
             elif preferred_date:
@@ -376,20 +409,72 @@ class CalendarManager:
                 end_datetime = start_datetime.replace(hour=17, minute=0)
             else:
                 # Default to next 7 days
-                start_datetime = datetime.now() + timedelta(hours=1)  # Start from next hour
+                now = datetime.now(self.user_timezone)
+                start_datetime = now + timedelta(hours=1)  # Start from next hour
                 end_datetime = start_datetime + timedelta(days=date_range_days)
             
             # Make timezone aware if needed
             if start_datetime.tzinfo is None:
-                start_datetime = self.user_timezone.localize(start_datetime)
+                start_datetime = start_datetime.replace(tzinfo=self.user_timezone)
             if end_datetime.tzinfo is None:
-                end_datetime = self.user_timezone.localize(end_datetime)
+                end_datetime = end_datetime.replace(tzinfo=self.user_timezone)
+            
+            logger.info(f"Searching for slots between {start_datetime} and {end_datetime}")
             
             slots = await self.calendar_service.find_available_slots(
                 duration_minutes=duration_minutes,
                 start_date=start_datetime,
                 end_date=end_datetime
             )
+            
+            logger.info(f"Found {len(slots)} available slots")
+            
+            # If user specified a particular day, filter to only show slots from that day
+            if time_preference:
+                # Check if user specified a specific day
+                specified_day = None
+                specified_time_of_day = None
+                days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+                
+                for day in days:
+                    if day in time_preference.lower():
+                        specified_day = day
+                        break
+                
+                # Check for time of day preferences
+                if 'morning' in time_preference.lower():
+                    specified_time_of_day = 'morning'
+                elif 'afternoon' in time_preference.lower():
+                    specified_time_of_day = 'afternoon'
+                elif 'evening' in time_preference.lower():
+                    specified_time_of_day = 'evening'
+                
+                if specified_day:
+                    # Filter slots to only include the specified day and time of day
+                    filtered_slots = []
+                    for slot in slots:
+                        # Convert slot time to user's timezone for comparison
+                        slot_time_local = slot.start_time.astimezone(self.user_timezone) if slot.start_time.tzinfo else slot.start_time.replace(tzinfo=self.user_timezone)
+                        slot_day = slot_time_local.strftime('%A').lower()
+                        slot_hour = slot_time_local.hour
+                        
+                        # Check if it matches the requested day
+                        if slot_day == specified_day:
+                            # If time of day is specified, also check that
+                            if specified_time_of_day:
+                                if (specified_time_of_day == 'morning' and 9 <= slot_hour < 12) or \
+                                   (specified_time_of_day == 'afternoon' and 12 <= slot_hour < 17) or \
+                                   (specified_time_of_day == 'evening' and 17 <= slot_hour < 20):
+                                    filtered_slots.append(slot)
+                                    logger.debug(f"Included slot: {slot} (hour {slot_hour} matches {specified_time_of_day})")
+                                else:
+                                    logger.debug(f"Excluded slot: {slot} (hour {slot_hour} doesn't match {specified_time_of_day})")
+                            else:
+                                # No time preference, include all slots from the day
+                                filtered_slots.append(slot)
+                    
+                    logger.info(f"Filtered to {len(filtered_slots)} slots for {specified_day} {specified_time_of_day or ''}")
+                    return filtered_slots[:10]  # Return top 10 slots from the specified day/time
             
             return slots[:10]  # Return top 10 slots
             
@@ -431,9 +516,9 @@ class CalendarManager:
             
             # Make timezone aware
             if start_date.tzinfo is None:
-                start_date = self.user_timezone.localize(start_date)
+                start_date = start_date.replace(tzinfo=self.user_timezone)
             if end_date.tzinfo is None:
-                end_date = self.user_timezone.localize(end_date)
+                end_date = end_date.replace(tzinfo=self.user_timezone)
             
             event = await self.calendar_service.get_event_by_name(
                 event_name, start_date, end_date

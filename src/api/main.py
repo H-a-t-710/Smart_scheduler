@@ -5,15 +5,20 @@ import os
 from typing import Dict, Optional
 import uuid
 from contextlib import asynccontextmanager
+import warnings
+
+# Suppress RuntimeWarning from pydub.utils
+warnings.filterwarnings("ignore", category=RuntimeWarning, module='pydub.utils')
 
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 
@@ -21,6 +26,9 @@ import uvicorn
 from config.environment import config
 from src.agent.conversation_manager import SmartSchedulerAgent
 from src.agent.state_manager import ConversationState
+
+# Import the FFmpeg setup to ensure pydub is configured early
+from config import ffmpeg_setup
 
 # Setup logging
 logging.basicConfig(
@@ -477,12 +485,12 @@ async def web_interface():
     </head>
     <body>
         <div class="header">
-            <h1>🤖 Smart Scheduler AI Agent</h1>
+            <h1>Smart Scheduler AI Agent</h1>
             <p><span id="voiceStatus" class="status-indicator status-offline"></span>Voice-Enabled Meeting Scheduler</p>
         </div>
         
         <div class="examples">
-            <h3>💬 Try these voice commands or type them:</h3>
+            <h3>Try these voice commands or type them:</h3>
             <ul>
                 <li>"I need to schedule a 30-minute meeting for next Tuesday afternoon"</li>
                 <li>"Find me an hour slot sometime next week"</li>
