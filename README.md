@@ -1,4 +1,4 @@
-# 🤖 Smart Scheduler AI Agent
+# Smart Scheduler AI Agent
 
 A sophisticated voice-enabled AI agent that helps users find and schedule meetings through natural conversation, with advanced time parsing and Google Calendar integration.
 
@@ -38,11 +38,11 @@ cd smart_scheduler
 pip install -r requirements.txt
 ```
 
-### 3. **FFmpeg Setup (No System Install Needed!)**
-- **FFmpeg is already included in this repo** under `bin/ffmpeg/` (Windows executables: `ffmpeg.exe`, `ffprobe.exe`, `ffplay.exe`).
-- **No need to install FFmpeg globally.**
-- The code automatically configures the correct path for ffmpeg and ffprobe at runtime.
-- **Do not delete or move the `bin/ffmpeg/` folder.**
+### 3. **FFmpeg Setup (Required!)**
+- **FFmpeg binaries are NOT included in this repo.**
+- Download FFmpeg for your OS from [ffmpeg.org/download.html](https://ffmpeg.org/download.html).
+- Place `ffmpeg.exe`, `ffprobe.exe`, and `ffplay.exe` in `bin/ffmpeg/` (create this folder if it doesn't exist), **OR** add FFmpeg to your system PATH.
+- The code will automatically use the binaries in `bin/ffmpeg/` if present, or will use the system PATH if not.
 
 ### 4. **Environment Variables (.env)**
 - Copy the example file and fill in your own keys:
@@ -77,32 +77,95 @@ python src/api/main.py
 ```
 - Open your browser to [http://localhost:8000](http://localhost:8000)
 
+## 🧩 Core Integrations & Fallbacks
+
+### 🗓️ Calendar Integration
+**Where:**  
+`src/agent/calendar_integration.py`  
+Used via endpoints in `src/api/main.py`
+
+**Methods/Features:**
+- Google Calendar API is the primary and only calendar integration.
+- The agent can:
+  - Authenticate with Google Calendar using OAuth2 credentials.
+  - Fetch available time slots.
+  - Schedule meetings.
+  - Resolve conflicts and suggest alternatives.
+  - Session management and state are handled to keep track of user requests and responses.
+
+**Fallbacks:**
+- There are no alternative calendar providers implemented (e.g., no Outlook or Apple Calendar fallback).
+
+### 🗣️ Speech-to-Text (STT)
+**Where:**  
+`src/voice/speech_to_text.py`
+
+**Methods/Features:**
+- **Primary:**
+  - Whisper (OpenAI Whisper model)
+  - Used for transcribing audio files.
+  - If Whisper fails (e.g., ffmpeg not found), it falls back to the next option.
+- **Fallback 1:**
+  - ElevenLabs Scribe v1
+  - Used if Whisper fails or is not available.
+  - Requires a valid ElevenLabs API key.
+- **Fallback 2:**
+  - Google Cloud Speech-to-Text
+  - Used if both Whisper and ElevenLabs fail or are not available.
+  - Requires Google Cloud credentials.
+
+**How it works:**
+- The `SpeechToTextService` class tries Whisper first, then ElevenLabs, then Google Cloud, in that order.
+
+### 🗣️ Text-to-Speech (TTS)
+**Where:**  
+`src/voice/text_to_speech.py`
+
+**Methods/Features:**
+- **Primary:**
+  - ElevenLabs TTS
+  - Used for synthesizing speech from text.
+  - Requires a valid ElevenLabs API key.
+- **Fallback:**
+  - Google Cloud Text-to-Speech
+  - Used if ElevenLabs is not available or fails.
+  - Requires Google Cloud credentials.
+
+**How it works:**
+- The `TextToSpeechService` class tries ElevenLabs first, then Google Cloud as a fallback.
+
 ## 🏗️ Architecture Overview
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   User Voice    │    │  Speech-to-Text │    │ Conversation    │
-│     Input       │───▶│  (ElevenLabs)   │───▶│   Manager       │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                        │
-┌─────────────────┐    ┌─────────────────┐             │
-│   Audio Output  │    │ Text-to-Speech  │             │
-│   (Speakers)    │◀───│  (ElevenLabs)   │◀────────────┘
-└─────────────────┘    └─────────────────┘
-                                                        │
-                       ┌─────────────────┐             │
-                       │ Google Gemini   │◀────────────┤
-                       │      Pro        │             │
-                       └─────────────────┘             │
-                                │                      │
-        ┌─────────────────────────┼──────────────────────┘
-        │                        │
-        ▼                        ▼
+┌─────────────────┐    ┌──────────────────────────────┐    ┌─────────────────┐
+│   User Voice    │    │  Speech-to-Text Pipeline     │    │ Conversation    │
+│     Input       │───▶│  (Whisper → ElevenLabs →     │───▶│   Manager       │
+└─────────────────┘    │   Google Cloud fallback)     │    └─────────────────┘
+                      └──────────────────────────────┘             │
+┌─────────────────┐    ┌──────────────────────────────┐            │
+│   Audio Output  │    │ Text-to-Speech Pipeline      │            │
+│   (Speakers)    │◀───│  (ElevenLabs → Google Cloud  │◀───────────┘
+└─────────────────┘    │   fallback)                  │
+                      └──────────────────────────────┘            │
+                             │                                    │
+                    ┌──────────────────────┐                      │
+                    │ Gemini 2.0 Flash LLM │◀─────────────────────┤
+                    └──────────────────────┘                      │
+                             │                                    │
+    ┌────────────────────────┼────────────────────────────────────┘
+    │                        │
+    ▼                        ▼
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │ Time Parser     │    │ Calendar API    │    │ State Manager   │
 │ (NLP + Logic)   │    │ (Google Cal)    │    │ (SQLite)        │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
+
+- **Speech-to-Text Pipeline:** Tries Whisper first, then ElevenLabs, then Google Cloud as fallback.
+- **Text-to-Speech Pipeline:** Tries ElevenLabs first, then Google Cloud as fallback.
+- **LLM:** Uses Google Gemini 2.0 Flash.
+- **Calendar:** Google Calendar API only.
+- **State:** Conversation and session state managed in SQLite.
 
 ## 📋 Prerequisites
 
@@ -112,8 +175,14 @@ Before setting up the Smart Scheduler, you'll need:
 2. **ElevenLabs API Key** (for Speech-to-Text and Text-to-Speech)
 3. **Google Cloud Account** (for fallback Speech-to-Text API)
 4. **Google Calendar API Access**
-5. **Google AI Studio API Key** (for Gemini Pro)
+5. **Google AI Studio API Key** (for Gemini model)
 6. **Audio Input/Output** (microphone and speakers)
+7. **FFmpeg**
+   - **Not included in this repository due to file size limits.**
+   - You must [download FFmpeg](https://ffmpeg.org/download.html) for your platform:
+     - **Windows:** Download the static build, extract, and copy `ffmpeg.exe`, `ffprobe.exe`, and `ffplay.exe` to `bin/ffmpeg/` in this project **OR** add the FFmpeg directory to your system PATH.
+     - **Mac/Linux:** Install via your package manager (e.g., `brew install ffmpeg` or `sudo apt-get install ffmpeg`) **OR** download and place the binaries in `bin/ffmpeg/`.
+   - The code will automatically use the binaries in `bin/ffmpeg/` if present, or will use the system PATH if not.
 
 ## 🎯 Usage
 
@@ -124,36 +193,6 @@ python src/api/main.py
 ```
 
 Then open your browser to `http://localhost:8000` for a web-based chat interface.
-
-### Option 2: Run Voice Conversation
-
-```bash
-python -m src.agent.conversation_manager
-```
-
-This starts a direct voice conversation in the terminal.
-
-### Option 3: API Integration
-
-Use the REST API endpoints:
-
-```python
-import requests
-
-# Start a conversation session
-response = requests.post("http://localhost:8000/api/sessions", 
-                        json={"user_id": "test_user"})
-session_id = response.json()["session_id"]
-
-# Send a message
-response = requests.post("http://localhost:8000/api/chat", 
-                        json={
-                            "user_input": "I need to schedule a 30-minute meeting for next Tuesday",
-                            "session_id": session_id,
-                            "user_id": "test_user"
-                        })
-print(response.json()["response"])
-```
 
 ## 💬 Example Conversations
 
@@ -331,21 +370,6 @@ class CalendarProvider:
         pass
 ```
 
-## 📈 Scalability
-
-### Deployment Options
-
-1. **Single Server**: Run directly with uvicorn
-2. **Containerized**: Docker deployment with proper resource limits
-3. **Microservices**: Separate voice, calendar, and conversation services
-4. **Cloud**: Deploy on AWS/GCP with auto-scaling
-
-### Production Considerations
-
-- **Rate Limiting**: Implement API rate limits
-- **Monitoring**: Add health checks and metrics
-- **Security**: JWT authentication, input validation
-- **Backup**: Database backup strategies for session data
 
 ## 🤝 Contributing
 
@@ -386,5 +410,3 @@ For questions, issues, or contributions:
 3. Create a new issue with detailed information
 
 ---
-
-**Built for NextDimension - The future of AI-powered scheduling**
