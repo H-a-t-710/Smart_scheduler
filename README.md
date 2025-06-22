@@ -25,6 +25,58 @@ A sophisticated voice-enabled AI agent that helps users find and schedule meetin
 - **Session Management**: Persistent conversation state with SQLite storage
 - **RESTful API**: Complete FastAPI-based web service with WebSocket support
 
+## 🚦 Quick Start: Environment Setup
+
+### 1. **Clone the Repository**
+```bash
+git clone <repository-url>
+cd smart_scheduler
+```
+
+### 2. **Install Python Dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+### 3. **FFmpeg Setup (No System Install Needed!)**
+- **FFmpeg is already included in this repo** under `bin/ffmpeg/` (Windows executables: `ffmpeg.exe`, `ffprobe.exe`, `ffplay.exe`).
+- **No need to install FFmpeg globally.**
+- The code automatically configures the correct path for ffmpeg and ffprobe at runtime.
+- **Do not delete or move the `bin/ffmpeg/` folder.**
+
+### 4. **Environment Variables (.env)**
+- Copy the example file and fill in your own keys:
+```bash
+cp .env.example .env
+```
+- Edit `.env` and set your API keys and config. **Never commit real secrets!**
+
+Example `.env` (dummy values):
+```env
+GOOGLE_AI_API_KEY=your-google-ai-api-key-here
+ELEVENLABS_API_KEY=your-elevenlabs-api-key-here
+ELEVENLABS_VOICE_ID=your-elevenlabs-voice-id-here
+GOOGLE_APPLICATION_CREDENTIALS=path/to/your/google-credentials.json
+GOOGLE_CLOUD_PROJECT_ID=your-google-cloud-project-id
+GOOGLE_CALENDAR_CREDENTIALS=credentials.json
+GOOGLE_CALENDAR_TOKEN=token.json
+APP_HOST=localhost
+APP_PORT=8000
+DEBUG=True
+DEFAULT_VOICE_LANGUAGE=en-US
+AUDIO_SAMPLE_RATE=16000
+AUDIO_CHUNK_SIZE=1024
+MODEL_NAME=gemini-2.0-flash
+MAX_TOKENS=1000
+TEMPERATURE=0.7
+```
+
+### 5. **Run the Application**
+```bash
+python src/api/main.py
+```
+- Open your browser to [http://localhost:8000](http://localhost:8000)
+
 ## 🏗️ Architecture Overview
 
 ```
@@ -62,86 +114,6 @@ Before setting up the Smart Scheduler, you'll need:
 4. **Google Calendar API Access**
 5. **Google AI Studio API Key** (for Gemini Pro)
 6. **Audio Input/Output** (microphone and speakers)
-
-## 🚀 Installation & Setup
-
-### 1. Clone the Repository
-
-```bash
-git clone <repository-url>
-cd smart-scheduler-agent
-```
-
-### 2. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Set Up Google Cloud Services
-
-#### Google Calendar API:
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing one
-3. Enable the Google Calendar API
-4. Create credentials (OAuth 2.0 for web application)
-5. Download the credentials JSON file as `credentials.json`
-
-#### Google Cloud Speech-to-Text (Fallback):
-1. Enable the Google Cloud Speech-to-Text API
-2. Create a service account
-3. Download the service account key as JSON
-4. Set the path in environment variables
-
-### 4. Set Up API Keys
-
-Create a `.env` file in the root directory:
-
-```env
-# Google AI Studio Configuration
-GOOGLE_AI_API_KEY=your_google_ai_studio_api_key_here
-
-# ElevenLabs Configuration (for TTS and STT)
-ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
-ELEVENLABS_VOICE_ID=your_preferred_voice_id
-
-# Google Cloud Configuration (for fallback STT)
-GOOGLE_APPLICATION_CREDENTIALS=path/to/your/service-account-key.json
-GOOGLE_CLOUD_PROJECT_ID=your_google_cloud_project_id
-
-# Google Calendar API
-GOOGLE_CALENDAR_CREDENTIALS=credentials.json
-GOOGLE_CALENDAR_TOKEN=token.json
-
-# Application Configuration
-APP_HOST=localhost
-APP_PORT=8000
-DEBUG=True
-
-# Voice Configuration
-DEFAULT_VOICE_LANGUAGE=en-US
-AUDIO_SAMPLE_RATE=16000
-AUDIO_CHUNK_SIZE=1024
-
-# LLM Configuration
-MODEL_NAME=gemini-pro
-MAX_TOKENS=1000
-TEMPERATURE=0.7
-```
-
-### 5. Initial Setup
-
-```bash
-# Install system dependencies (Ubuntu/Debian)
-sudo apt-get update
-sudo apt-get install portaudio19-dev python3-pyaudio
-
-# For macOS
-brew install portaudio
-
-# For Windows
-# PyAudio should install automatically with pip
-```
 
 ## 🎯 Usage
 

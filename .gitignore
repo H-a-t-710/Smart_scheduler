@@ -5,7 +5,6 @@ my-calendar-project.json
 Google_Cloud
 token.json
 .env
-bin
 my-calendar-project.zip
 __pycache__/
 config/__pycache__/*
@@ -14,3 +13,6 @@ src/voice/__pycache__/*
 src/agent/__pycache__/*
 src/app/__pycache__/*
 smart_scheduler.db
+bin/ffmpeg/ffmpeg.exe
+bin/ffmpeg/ffprobe.exe
+bin/ffmpeg/ffplay.exe
